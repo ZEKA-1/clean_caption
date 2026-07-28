@@ -2,6 +2,7 @@ import shutil
 import uuid
 from pathlib import Path
 
+from fastapi.responses import FileResponse
 from fastapi import FastAPI, File, HTTPException, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -78,3 +79,27 @@ async def get_result(job_id: str):
     if job.status != "done":
         raise HTTPException(409, f"Job is not finished yet (status: {job.status}).")
     return ResultResponse(videoUrl=f"/files/{job_id}/output.mp4", detections=job.detections)
+
+@app.get("/api/process/{job_id}/download")
+async def download_result(job_id: str):
+    job = jobs.get_job(job_id)
+
+    if not job:
+        raise HTTPException(404, "Unknown jobId.")
+
+    if job.status != "done":
+        raise HTTPException(409, f"Job is not finished yet (status: {job.status}).")
+
+    if not job.output_path:
+        raise HTTPException(404, "Processed video not found.")
+
+    output_file = Path(job.output_path)
+
+    if not output_file.exists():
+        raise HTTPException(404, "Processed video file does not exist.")
+
+    return FileResponse(
+        path=str(output_file),
+        media_type="video/mp4",
+        filename=f"cleancaption-{job_id}.mp4",
+    )

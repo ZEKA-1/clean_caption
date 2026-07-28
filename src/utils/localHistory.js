@@ -1,30 +1,49 @@
-// Small "recently processed" list, stored in localStorage. Nothing here
-// gets sent to a server — just filenames and dates, kept on the device.
-
-const STORAGE_KEY = "cleanCaptionHistory";
-const MAX_ENTRIES = 8;
+const HISTORY_KEY = "cleanCaptionHistory";
+const MAX_HISTORY_ITEMS = 3;
 
 export function getLocalHistory() {
+  const savedHistory = localStorage.getItem(HISTORY_KEY);
+
+  if (!savedHistory) {
+    return [];
+  }
+
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
+    const history = JSON.parse(savedHistory);
+
+    if (!Array.isArray(history)) {
+      return [];
+    }
+
+    // Always keep only the latest 3 videos.
+    const limitedHistory = history.slice(0, MAX_HISTORY_ITEMS);
+
+    // Clean old extra items from localStorage.
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(limitedHistory));
+
+    return limitedHistory;
   } catch {
     return [];
   }
 }
 
-export function addLocalHistoryEntry({ name, quality }) {
-  const current = getLocalHistory();
-  const entry = {
-    name,
-    quality,
+export function addLocalHistoryEntry(entry) {
+  const currentHistory = getLocalHistory();
+
+  const newEntry = {
+    name: entry.name,
+    quality: entry.quality,
     date: new Date().toISOString(),
   };
-  const updated = [entry, ...current].slice(0, MAX_ENTRIES);
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-  return updated;
+
+  const updatedHistory = [newEntry, ...currentHistory].slice(
+    0,
+    MAX_HISTORY_ITEMS
+  );
+
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(updatedHistory));
 }
 
 export function clearLocalHistory() {
-  localStorage.removeItem(STORAGE_KEY);
+  localStorage.removeItem(HISTORY_KEY);
 }

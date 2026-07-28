@@ -20,6 +20,7 @@ from .audio_censor import censor_audio
 from .profanity import Detection, find_profanity, format_timestamp
 from .transcribe import transcribe_words
 from .video_censor import censor_video
+from .subtitles import create_censored_srt
 
 ProgressCB = Callable[[int, str], None]
 
@@ -33,16 +34,38 @@ def _extract_audio(input_video: str, output_wav: str) -> None:
     subprocess.run(cmd, check=True, capture_output=True)
 
 
-def _mux(video_only: str, audio_only: str, output_path: str) -> None:
+def _mux(video_only: str, audio_only: str, subtitles_path: str, output_path: str) -> None:
+    work_dir = Path(subtitles_path).parent
+    subtitle_file_name = Path(subtitles_path).name
+
     cmd = [
         "ffmpeg", "-y",
-        "-i", video_only, "-i", audio_only,
-        "-c:v", "copy", "-c:a", "copy",
-        "-map", "0:v:0", "-map", "1:a:0",
+        "-i", video_only,
+        "-i", audio_only,
+
+        # Burn subtitles directly into the video.
+        "-vf", f"subtitles={subtitle_file_name}",
+
+        # Browser-friendly video format.
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        "-preset", "veryfast",
+
+        # Browser-friendly audio format.
+        "-c:a", "aac",
+        "-b:a", "192k",
+
+        "-map", "0:v:0",
+        "-map", "1:a:0",
         "-shortest",
+        "-movflags", "+faststart",
         output_path,
     ]
-    subprocess.run(cmd, check=True, capture_output=True)
+
+    print("Running final mux with subtitles:")
+    print(" ".join(cmd))
+
+    subprocess.run(cmd, check=True, capture_output=True, cwd=str(work_dir))
 
 
 def run_pipeline(
@@ -57,6 +80,7 @@ def run_pipeline(
     audio_wav = str(work / "audio.wav")
     censored_audio = str(work / "censored_audio.m4a")
     censored_video_noaudio = str(work / "censored_video.mp4")
+    subtitle_srt = str(work / "subtitles.srt")
 
     progress_cb(5, "Extracting audio...")
     _extract_audio(input_video, audio_wav)
@@ -64,17 +88,25 @@ def run_pipeline(
     progress_cb(15, "Transcribing speech...")
     words = transcribe_words(audio_wav)
 
+    print("WORDS COUNT:", len(words))
+    print("FIRST WORDS:")
+    for w in words[:50]:
+        print(w.text, w.start, w.end)
+
     progress_cb(35, "Detecting offensive language...")
     detections = find_profanity(words)
 
-    progress_cb(50, "Adding audio beeps...")
+    progress_cb(45, "Creating subtitles...")
+    create_censored_srt(words, subtitle_srt)
+
+    progress_cb(55, "Adding audio beeps...")
     censor_audio(input_video, detections, censored_audio)
 
     progress_cb(70, "Applying mouth blur...")
     censor_video(input_video, detections, censored_video_noaudio)
 
-    progress_cb(95, "Finalizing video...")
-    _mux(censored_video_noaudio, censored_audio, output_path)
+    progress_cb(95, "Finalizing video with subtitles...")
+    _mux(censored_video_noaudio, censored_audio, subtitle_srt, output_path)
 
     progress_cb(100, "Processing complete.")
     return detections

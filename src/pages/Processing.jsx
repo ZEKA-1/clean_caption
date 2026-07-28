@@ -3,53 +3,103 @@ import { useNavigate } from "react-router-dom";
 import Navbar from "../components/Navbar.jsx";
 import Footer from "../components/Footer.jsx";
 
-const STEP_MS = 180; // how often progress advances
-const STEP_SIZE = 5; // percent added on every tick
+const API_URL = "http://127.0.0.1:8000";
 
 function Processing() {
   const navigate = useNavigate();
+
   const [progress, setProgress] = useState(0);
+  const [message, setMessage] = useState("Starting processing...");
+  const [status, setStatus] = useState("running");
 
   const fileName =
     sessionStorage.getItem("cleanCaptionFileName") || "your-video.mp4";
-  const quality = sessionStorage.getItem("cleanCaptionQuality") || "original";
+  const jobId = sessionStorage.getItem("cleanCaptionJobId");
 
   useEffect(() => {
-    const timer = setInterval(() => {
-      setProgress((current) => {
-        const next = current + STEP_SIZE;
-        if (next >= 100) {
-          clearInterval(timer);
-          return 100;
+    if (!jobId) {
+      setMessage("No processing job found. Please upload a video first.");
+      setStatus("error");
+      return;
+    }
+
+    let timer;
+
+    async function checkStatus() {
+      try {
+        const response = await fetch(`${API_URL}/api/process/${jobId}/status`);
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(data.detail || "Could not get processing status.");
         }
-        return next;
-      });
-    }, STEP_MS);
+
+        setProgress(data.progress || 0);
+        setMessage(data.message || "Processing...");
+        setStatus(data.status);
+
+        if (data.status === "done") {
+          clearInterval(timer);
+
+          const resultResponse = await fetch(
+            `${API_URL}/api/process/${jobId}/result`
+          );
+
+          const resultData = await resultResponse.json();
+
+          if (!resultResponse.ok) {
+            throw new Error(resultData.detail || "Could not get final video.");
+          }
+
+          const finalVideoUrl = `${API_URL}${resultData.videoUrl}`;
+          const downloadUrl = `${API_URL}/api/process/${jobId}/download`;
+
+          sessionStorage.setItem(
+            "cleanCaptionProcessedVideoUrl",
+            finalVideoUrl
+          );
+
+          sessionStorage.setItem("cleanCaptionDownloadUrl", downloadUrl);
+
+          sessionStorage.setItem(
+            "cleanCaptionDetections",
+            JSON.stringify(resultData.detections || [])
+          );
+
+          navigate("/download");
+        }
+
+        if (data.status === "error") {
+          clearInterval(timer);
+          setStatus("error");
+          setMessage(data.message || "Processing failed.");
+        }
+      } catch (error) {
+        clearInterval(timer);
+        setStatus("error");
+        setMessage(error.message || "Processing failed.");
+      }
+    }
+
+    checkStatus();
+    timer = setInterval(checkStatus, 2000);
 
     return () => clearInterval(timer);
-  }, []);
+  }, [jobId, navigate]);
 
-  useEffect(() => {
-    if (progress === 100) {
-      const redirectTimer = setTimeout(() => {
-        navigate("/download");
-      }, 700);
-
-      return () => clearTimeout(redirectTimer);
+  async function handleCancel() {
+    if (jobId) {
+      try {
+        await fetch(`${API_URL}/api/process/${jobId}`, {
+          method: "DELETE",
+        });
+      } catch (error) {
+        console.error("Cancel failed:", error);
+      }
     }
-  }, [progress, navigate]);
 
-  const currentMessage =
-    progress < 35
-      ? "Detecting offensive language..."
-      : progress < 70
-        ? "Adding audio beeps..."
-        : progress < 100
-          ? "Applying mouth blur..."
-          : "Processing complete.";
-
-  const remainingSteps = Math.ceil((100 - progress) / STEP_SIZE);
-  const remainingSeconds = Math.max(1, Math.round((remainingSteps * STEP_MS) / 1000));
+    navigate("/upload");
+  }
 
   return (
     <>
@@ -57,13 +107,17 @@ function Processing() {
 
       <main className="page-main page-shell">
         <section className="processing-card">
-          <div className="spinner" aria-hidden="true"></div>
+          {status !== "error" && (
+            <div className="spinner" aria-hidden="true"></div>
+          )}
 
           <p className="eyebrow">Processing</p>
-          <h1>Cleaning your video...</h1>
-          <p className="processing-file">
-            {fileName} · {quality === "original" ? "Original quality" : quality}
-          </p>
+
+          <h1>
+            {status === "error" ? "Processing failed." : "Cleaning your video..."}
+          </h1>
+
+          <p className="processing-file">{fileName}</p>
 
           <div className="progress-track" aria-label={`${progress}% complete`}>
             <div
@@ -73,29 +127,23 @@ function Processing() {
           </div>
 
           <div className="progress-row">
-            <span>{currentMessage}</span>
+            <span>{message}</span>
             <strong>{progress}%</strong>
           </div>
 
-          {progress < 100 && (
-            <p className="small-text time-remaining">
-              ~{remainingSeconds}s remaining
+          {status === "error" && (
+            <p className="small-text">
+              Check your backend terminal to see the real error.
             </p>
           )}
 
           <button
             type="button"
             className="button button-secondary cancel-button"
-            onClick={() => navigate("/upload")}
+            onClick={handleCancel}
           >
             Cancel
           </button>
-
-          <p className="small-text">
-            TODO backend: replace this progress simulation with real
-            processing status from the API. Cancelling should also tell the
-            API to stop the job.
-          </p>
         </section>
       </main>
 
