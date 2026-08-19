@@ -44,7 +44,7 @@ def _mux(video_only: str, audio_only: str, subtitles_path: str, output_path: str
         "-i", audio_only,
 
         # Burn subtitles directly into the video.
-        "-vf", f"subtitles={subtitle_file_name}",
+        "-vf", f"subtitles={subtitle_file_name}:force_style='Bold=1'",
 
         # Browser-friendly video format.
         "-c:v", "libx264",
