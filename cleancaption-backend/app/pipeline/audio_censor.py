@@ -1,70 +1,250 @@
 """
-Audio censoring: mute each detected word's time range and overlay a
-beep tone over that same range, using ffmpeg's filter graph directly
-(no re-encoding of the original audio beyond the final mixdown).
+Audio censoring for CleanCaption.
+
+Modes:
+- beep: mute offensive words and add beep sounds
+- mute: mute offensive words without beep
 """
 
 import subprocess
 
 from .profanity import Detection
 
+
 BEEP_FREQUENCY_HZ = 1000
-# small padding so the beep fully covers fast/clipped words
+
+# Small padding around the word
+# so the censorship covers it fully.
 PAD_SECONDS = 0.05
 
 
-def _mute_filter(detections: list[Detection]) -> str:
-    """Chain of volume=0 filters, each active only during one word."""
+def _mute_filter(
+    detections: list[Detection],
+) -> str:
+
     if not detections:
         return "anull"
+
     parts = []
-    for d in detections:
-        start = max(0.0, d.start - PAD_SECONDS)
-        end = d.end + PAD_SECONDS
-        parts.append(f"volume=enable='between(t,{start:.3f},{end:.3f})':volume=0")
+
+    for detection in detections:
+
+        start = max(
+            0.0,
+            detection.start - PAD_SECONDS,
+        )
+
+        end = (
+            detection.end
+            + PAD_SECONDS
+        )
+
+        parts.append(
+            (
+                "volume="
+                f"enable='between(t,"
+                f"{start:.3f},"
+                f"{end:.3f})':"
+                "volume=0"
+            )
+        )
+
     return ",".join(parts)
 
 
-def censor_audio(input_video: str, detections: list[Detection], output_audio: str) -> None:
-    """
-    Produce a standalone censored audio track (AAC) at `output_audio`:
-    original audio with profane ranges muted, beep tones layered on top.
-    """
+def censor_audio(
+    input_video: str,
+    detections: list[Detection],
+    output_audio: str,
+    mode: str = "beep",
+) -> None:
+
+    mode = (
+        mode
+        .strip()
+        .lower()
+    )
+
+    if mode not in {
+        "beep",
+        "mute",
+    }:
+        raise ValueError(
+            f"Unsupported audio censor mode: {mode}"
+        )
+
+    # ========================================================
+    # MUTE MODE
+    # ========================================================
+
+    if mode == "mute":
+
+        cmd = [
+            "ffmpeg",
+            "-y",
+
+            "-i",
+            input_video,
+
+            "-af",
+            _mute_filter(
+                detections
+            ),
+
+            "-vn",
+
+            "-c:a",
+            "aac",
+
+            "-b:a",
+            "192k",
+
+            output_audio,
+        ]
+
+        print(
+            "Audio censor mode: MUTE"
+        )
+
+        subprocess.run(
+            cmd,
+            check=True,
+            capture_output=True,
+        )
+
+        return
+
+    # ========================================================
+    # BEEP MODE
+    # ========================================================
+
+    print(
+        "Audio censor mode: BEEP"
+    )
+
     filter_complex_parts = []
 
-    # [0:a] -> muted original audio -> [muted]
-    filter_complex_parts.append(f"[0:a]{_mute_filter(detections)}[muted]")
+    # First mute all detected offensive words.
+
+    filter_complex_parts.append(
+        (
+            f"[0:a]"
+            f"{_mute_filter(detections)}"
+            f"[muted]"
+        )
+    )
 
     beep_labels = []
-    for i, d in enumerate(detections):
-        start = max(0.0, d.start - PAD_SECONDS)
-        duration = (d.end + PAD_SECONDS) - start
-        delay_ms = int(start * 1000)
-        label = f"beep{i}"
-        filter_complex_parts.append(
-            f"sine=frequency={BEEP_FREQUENCY_HZ}:duration={duration:.3f}"
-            f"[gen{i}];[gen{i}]adelay={delay_ms}|{delay_ms}[{label}]"
+
+    # Create one beep for every detection.
+
+    for index, detection in enumerate(
+        detections
+    ):
+
+        start = max(
+            0.0,
+            detection.start - PAD_SECONDS,
         )
-        beep_labels.append(f"[{label}]")
+
+        duration = (
+            detection.end
+            + PAD_SECONDS
+            - start
+        )
+
+        delay_ms = int(
+            start * 1000
+        )
+
+        beep_label = (
+            f"beep{index}"
+        )
+
+        filter_complex_parts.append(
+            (
+                f"sine="
+                f"frequency="
+                f"{BEEP_FREQUENCY_HZ}:"
+                f"duration="
+                f"{duration:.3f}"
+                f"[generated{index}];"
+
+                f"[generated{index}]"
+                f"adelay="
+                f"{delay_ms}|"
+                f"{delay_ms}"
+                f"[{beep_label}]"
+            )
+        )
+
+        beep_labels.append(
+            f"[{beep_label}]"
+        )
+
+    # If offensive words exist,
+    # mix the beeps with the muted audio.
 
     if beep_labels:
-        mix_inputs = "[muted]" + "".join(beep_labels)
-        n = len(beep_labels) + 1
-        filter_complex_parts.append(
-            f"{mix_inputs}amix=inputs={n}:duration=first:dropout_transition=0[aout]"
+
+        mix_inputs = (
+            "[muted]"
+            + "".join(
+                beep_labels
+            )
         )
+
+        number_of_inputs = (
+            len(beep_labels)
+            + 1
+        )
+
+        filter_complex_parts.append(
+            (
+                f"{mix_inputs}"
+                f"amix="
+                f"inputs="
+                f"{number_of_inputs}:"
+                f"duration=first:"
+                f"dropout_transition=0"
+                f"[aout]"
+            )
+        )
+
         final_label = "[aout]"
+
     else:
+
         final_label = "[muted]"
 
-    filter_complex = ";".join(filter_complex_parts)
+    filter_complex = ";".join(
+        filter_complex_parts
+    )
 
     cmd = [
-        "ffmpeg", "-y",
-        "-i", input_video,
-        "-filter_complex", filter_complex,
-        "-map", final_label,
-        "-c:a", "aac", "-b:a", "192k",
+        "ffmpeg",
+        "-y",
+
+        "-i",
+        input_video,
+
+        "-filter_complex",
+        filter_complex,
+
+        "-map",
+        final_label,
+
+        "-c:a",
+        "aac",
+
+        "-b:a",
+        "192k",
+
         output_audio,
     ]
-    subprocess.run(cmd, check=True, capture_output=True)
+
+    subprocess.run(
+        cmd,
+        check=True,
+        capture_output=True,
+    )
